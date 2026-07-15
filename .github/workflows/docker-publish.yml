@@ -1,0 +1,87 @@
+name: 发布 Docker 镜像
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: 构建并发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 启用 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 启用 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建本机验收镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: ai-note:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 验证首次启动和双端口
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name ai-note-verify \
+            -p 13000:3000 \
+            -p 14000:4000 \
+            ai-note:verify
+          trap 'docker logs ai-note-verify || true' ERR
+          for attempt in {1..45}; do
+            if curl --fail --silent http://127.0.0.1:13000/ >/dev/null \
+              && curl --fail --silent http://127.0.0.1:14000/api/v1/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/noema
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,prefix=sha-
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true

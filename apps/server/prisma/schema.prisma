@@ -1,0 +1,519 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum NoteStatus {
+  INBOX
+  ACTIVE
+  ARCHIVED
+}
+
+enum TaskStatus {
+  TODO
+  DOING
+  DONE
+}
+
+enum JobStatus {
+  PENDING
+  WAITING_CONFIGURATION
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AiProvider {
+  OPENAI_COMPATIBLE
+  ANTHROPIC
+  GEMINI
+  OLLAMA
+}
+
+enum ConversationMode {
+  KNOWLEDGE
+  GENERAL
+}
+
+enum ConversationScope {
+  NOTE
+  FOLDER
+  WORKSPACE
+}
+
+enum AiRunKind {
+  CHAT
+  ACTION
+}
+
+enum AiRunStatus {
+  PENDING
+  STREAMING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AnswerType {
+  GROUNDED
+  GENERAL
+  INSUFFICIENT
+}
+
+enum SourceType {
+  USER
+  WEB
+  FILE
+  IMAGE
+  AUDIO
+  AI
+  IMPORT
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+enum SessionKind {
+  WEB
+  MOBILE
+}
+
+model User {
+  id              String              @id @default(cuid())
+  email           String              @unique
+  passwordHash    String
+  name            String
+  isAdmin         Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  ownedSpaces     Workspace[]         @relation("WorkspaceOwner")
+  memberships     WorkspaceMember[]
+  sessions        Session[]
+  idempotency     IdempotencyRecord[]
+  providerConfigs AiProviderConfig[]
+  conversations   Conversation[]
+  aiRuns          AiRun[]
+  requestedJobs   AiJob[]
+}
+
+model Workspace {
+  id            String              @id @default(cuid())
+  name          String
+  ownerId       String
+  owner         User                @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  members       WorkspaceMember[]
+  folders       Folder[]
+  tags          Tag[]
+  notes         Note[]
+  blocks        NoteBlock[]
+  assets        Asset[]
+  chunks        ContentChunk[]
+  tasks         Task[]
+  conversations Conversation[]
+  aiRuns        AiRun[]
+  jobs          AiJob[]
+  usage         AiUsage[]
+  audits        AuditLog[]
+  idempotency   IdempotencyRecord[]
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String    @default("OWNER")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model Session {
+  id               String      @id @default(cuid())
+  tokenHash        String      @unique
+  refreshTokenHash String?     @unique
+  userId           String
+  kind             SessionKind @default(WEB)
+  deviceId         String?
+  deviceName       String?
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  lastUsedAt       DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime    @default(now())
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([userId, deviceId, kind])
+}
+
+model IdempotencyRecord {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String
+  key         String
+  method      String
+  path        String
+  statusCode  Int
+  response    Json?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId, key, method, path])
+  @@index([expiresAt])
+}
+
+model Folder {
+  id            String         @id @default(cuid())
+  workspaceId   String
+  name          String
+  parentId      String?
+  createdAt     DateTime       @default(now())
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent        Folder?        @relation("FolderTree", fields: [parentId], references: [id])
+  children      Folder[]       @relation("FolderTree")
+  notes         Note[]
+  conversations Conversation[]
+
+  @@unique([workspaceId, parentId, name])
+}
+
+model Tag {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String    @default("#596B5B")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  notes       NoteTag[]
+
+  @@unique([workspaceId, name])
+}
+
+model Note {
+  id            String         @id @default(cuid())
+  workspaceId   String
+  folderId      String?
+  title         String         @default("无标题笔记")
+  content       Json
+  plainText     String         @default("")
+  summary       String?
+  status        NoteStatus     @default(INBOX)
+  aiEnabled     Boolean        @default(true)
+  version       Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder        Folder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  tags          NoteTag[]
+  blocks        NoteBlock[]
+  versions      NoteVersion[]
+  sources       Source[]
+  assets        Asset[]
+  chunks        ContentChunk[]
+  outgoing      NoteRelation[] @relation("OutgoingRelation")
+  incoming      NoteRelation[] @relation("IncomingRelation")
+  tasks         Task[]
+  jobs          AiJob[]
+  citations     Citation[]
+  conversations Conversation[]
+
+  @@index([workspaceId, status, updatedAt])
+  @@index([workspaceId, folderId])
+}
+
+model NoteTag {
+  noteId String
+  tagId  String
+  note   Note   @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  tag    Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, tagId])
+}
+
+model NoteBlock {
+  id          String         @id @default(cuid())
+  noteId      String
+  workspaceId String
+  type        String         @default("paragraph")
+  position    Int
+  content     Json
+  plainText   String         @default("")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  note        Note           @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  chunks      ContentChunk[]
+  citations   Citation[]
+  tasks       Task[]
+
+  @@index([workspaceId, noteId, position])
+}
+
+model NoteVersion {
+  id        String   @id @default(cuid())
+  noteId    String
+  version   Int
+  title     String
+  content   Json
+  plainText String
+  createdAt DateTime @default(now())
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@unique([noteId, version])
+}
+
+model Source {
+  id        String     @id @default(cuid())
+  noteId    String
+  type      SourceType
+  label     String?
+  url       String?
+  metadata  Json?
+  createdAt DateTime   @default(now())
+  note      Note       @relation(fields: [noteId], references: [id], onDelete: Cascade)
+}
+
+model Asset {
+  id          String    @id @default(cuid())
+  workspaceId String
+  noteId      String?
+  key         String    @unique
+  filename    String
+  mimeType    String
+  size        Int
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  note        Note?     @relation(fields: [noteId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, noteId])
+}
+
+model ContentChunk {
+  id          String                       @id @default(cuid())
+  workspaceId String
+  noteId      String
+  blockId     String
+  position    Int
+  content     String
+  embedding   Unsupported("vector(1536)")?
+  createdAt   DateTime                     @default(now())
+  workspace   Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  note        Note                         @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  block       NoteBlock                    @relation(fields: [blockId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, noteId])
+}
+
+model NoteRelation {
+  id         String   @id @default(cuid())
+  fromNoteId String
+  toNoteId   String
+  type       String
+  score      Float
+  createdAt  DateTime @default(now())
+  fromNote   Note     @relation("OutgoingRelation", fields: [fromNoteId], references: [id], onDelete: Cascade)
+  toNote     Note     @relation("IncomingRelation", fields: [toNoteId], references: [id], onDelete: Cascade)
+
+  @@unique([fromNoteId, toNoteId, type])
+}
+
+model Task {
+  id            String     @id @default(cuid())
+  workspaceId   String
+  sourceNoteId  String
+  sourceBlockId String?
+  title         String
+  status        TaskStatus @default(TODO)
+  dueAt         DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  workspace     Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceNote    Note       @relation(fields: [sourceNoteId], references: [id], onDelete: Cascade)
+  sourceBlock   NoteBlock? @relation(fields: [sourceBlockId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status, dueAt])
+}
+
+model Conversation {
+  id               String            @id @default(cuid())
+  workspaceId      String
+  createdById      String
+  providerConfigId String?
+  noteId           String?
+  folderId         String?
+  title            String
+  mode             ConversationMode  @default(KNOWLEDGE)
+  scope            ConversationScope @default(WORKSPACE)
+  model            String?
+  archivedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy        User              @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  providerConfig   AiProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
+  note             Note?             @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  folder           Folder?           @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  messages         Message[]
+  runs             AiRun[]
+
+  @@index([workspaceId, createdById, updatedAt])
+}
+
+model Message {
+  id               String            @id @default(cuid())
+  conversationId   String
+  providerConfigId String?
+  parentMessageId  String?
+  role             MessageRole
+  content          String
+  status           AiRunStatus       @default(COMPLETED)
+  answerType       AnswerType?
+  certainty        String?
+  model            String?
+  inputTokens      Int               @default(0)
+  outputTokens     Int               @default(0)
+  error            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  conversation     Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  providerConfig   AiProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
+  parentMessage    Message?          @relation("MessageRegeneration", fields: [parentMessageId], references: [id], onDelete: SetNull)
+  regenerations    Message[]         @relation("MessageRegeneration")
+  citations        Citation[]
+  run              AiRun?
+
+  @@index([conversationId, createdAt])
+}
+
+model Citation {
+  id              String    @id @default(cuid())
+  messageId       String
+  noteId          String
+  blockId         String
+  excerpt         String
+  ordinal         Int       @default(1)
+  sourceUpdatedAt DateTime?
+  createdAt       DateTime  @default(now())
+  message         Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  note            Note      @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  block           NoteBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+}
+
+model AiJob {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  noteId            String?
+  requestedByUserId String?
+  providerConfigId  String?
+  type              String
+  status            JobStatus         @default(PENDING)
+  dedupeKey         String            @unique
+  input             Json
+  output            Json?
+  model             String?
+  attempts          Int               @default(0)
+  error             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  note              Note?             @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  requestedBy       User?             @relation(fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  providerConfig    AiProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status, createdAt])
+}
+
+model AiProviderConfig {
+  id                 String         @id @default(cuid())
+  userId             String
+  provider           AiProvider
+  name               String
+  baseUrl            String
+  chatModel          String
+  embeddingModel     String?
+  enabled            Boolean        @default(true)
+  isDefaultChat      Boolean        @default(false)
+  isDefaultEmbedding Boolean        @default(false)
+  capabilities       Json?
+  lastValidatedAt    DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations      Conversation[]
+  messages           Message[]
+  runs               AiRun[]
+  jobs               AiJob[]
+
+  @@unique([userId, name])
+  @@index([userId, enabled])
+}
+
+model AiRun {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  userId            String
+  providerConfigId  String?
+  conversationId    String?
+  messageId         String?           @unique
+  kind              AiRunKind
+  status            AiRunStatus       @default(PENDING)
+  action            String?
+  provider          String
+  model             String
+  input             Json
+  output            Json?
+  inputTokens       Int               @default(0)
+  outputTokens      Int               @default(0)
+  error             String?
+  cancelRequestedAt DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  providerConfig    AiProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
+  conversation      Conversation?     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message           Message?          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AiUsage {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  kind         String
+  model        String
+  inputTokens  Int       @default(0)
+  outputTokens Int       @default(0)
+  estimatedCny Decimal   @default(0) @db.Decimal(12, 6)
+  createdAt    DateTime  @default(now())
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  action      String
+  targetType  String
+  targetId    String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+}

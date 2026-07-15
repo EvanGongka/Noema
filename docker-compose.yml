@@ -1,0 +1,21 @@
+services:
+  zhil:
+    image: ${AI_NOTE_IMAGE:-gongkeao/noema:latest}
+    pull_policy: missing
+    build: .
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+      - "${API_HOST_PORT:-4000}:4000"
+    environment:
+      WEB_URL: ${WEB_URL:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOW_PRIVATE_AI_ENDPOINTS: ${ALLOW_PRIVATE_AI_ENDPOINTS:-false}
+      ENABLE_AI_WORKER: ${ENABLE_AI_WORKER:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - zhil-data:/data
+    restart: unless-stopped
+
+volumes:
+  zhil-data:
